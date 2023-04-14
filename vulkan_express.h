@@ -53,13 +53,6 @@
 #ifdef __cplusplus
 
     template<typename T>
-    struct VxInlinePtrCast {
-        const T* operator<<(const T& t) { return &t; }
-    };
-
-    #define VxInlinePtrCast(T) (VxInlinePtrCast<T>())<<
-
-    template<typename T>
     struct VxInlineArrayCast {
         template<typename A>
         const T* operator<<(const A& a) { return &a._0; }
@@ -67,19 +60,22 @@
 
     #define VxInlineArrayCast(T) (VxInlineArrayCast<T>())<<
 
+    template<typename T>
+    struct VxInlinePtrCast {
+        const T* operator<<(const T& t) { return &t; }
+    };
+
+    #define VxInlinePtrCast(T) (VxInlinePtrCast<T>())<<
+
 #else
 
-    #define VxInlinePtrCast(T) (const T*)&
-
     #define VxInlineArrayCast(T) (const T*)&
+
+    #define VxInlinePtrCast(T) (const T*)&
 
 #endif
 
 //------------------------------------------------------------------------------
-
-#define VxInlinePtr(T) VxInlinePtrCast(T)(T)
-
-#define VxInlineArray(T) VxInlineArrayCast(T)(VxInlineArrayOf##T)
 
 #ifndef VX_INLINE_ARRAY_ELEMENTS
 #define VX_INLINE_ARRAY_ELEMENTS _0,_1,_2,_3,_4,_5,_6,_7
@@ -89,6 +85,10 @@
         typedef struct VxInlineArrayOf##T { \
             T VX_INLINE_ARRAY_ELEMENTS; \
         } VxInlineArrayOf##T;
+
+#define VxInlineArray(T) VxInlineArrayCast(T)(VxInlineArrayOf##T)
+
+#define VxInlinePtr(T) VxInlinePtrCast(T)(T)
 
 VxInlineArrayDef(VkAccelerationStructureBuildGeometryInfoKHR)
 VxInlineArrayDef(VkAccelerationStructureBuildRangeInfoKHR)

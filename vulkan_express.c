@@ -1441,12 +1441,6 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
                 vxCopySurfaceCapability(supportedUsageFlags);
         #undef  vxCopySurfaceCapability
 
-        if (vxSurfaceCapabilities->minImageCount < VX_MIN_CANVAS_FRAME_COUNT)
-            vxSurfaceCapabilities->minImageCount = VX_MIN_CANVAS_FRAME_COUNT;
-
-        if (vxSurfaceCapabilities->maxImageCount > VX_MAX_CANVAS_FRAME_COUNT)
-            vxSurfaceCapabilities->maxImageCount = VX_MAX_CANVAS_FRAME_COUNT;
-
         pContext->surfaceFormatCount = vxLengthOf(pContext->surfaceFormats);
         vxExpectNonErrorOrReturn(
             vkGetPhysicalDeviceSurfaceFormatsKHR(
