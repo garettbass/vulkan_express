@@ -1420,6 +1420,11 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
             }
         );
 
+        vkGetPhysicalDeviceMemoryProperties(
+            pContext->physicalDevice,
+            &pContext->physicalDeviceMemoryProperties
+        );
+
         VkSurfaceCapabilitiesKHR surfaceCapabilities;
         vxExpectSuccessOrReturn(
             vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -1529,6 +1534,7 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
         };
         features2.pNext = &vk11features;
         features2.features.multiDrawIndirect = true;
+        features2.features.samplerAnisotropy = true;
         features2.features.pipelineStatisticsQuery = true;
         features2.features.shaderInt64 = true;
         features2.features.shaderInt16 = true;
@@ -1572,50 +1578,73 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
         &pContext->graphicsQueue
     );
 
-    VkCommandPoolCreateInfo commandPoolCreateInfo = {
-        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-    };
-    commandPoolCreateInfo.pNext
-        = (pCreateInfo && pCreateInfo->pCommandPoolCreateInfo)
-        ? (pCreateInfo->pCommandPoolCreateInfo->pNext)
-        : nullptr;
-    commandPoolCreateInfo.flags
-        = (pCreateInfo && pCreateInfo->pCommandPoolCreateInfo)
-        ? (pCreateInfo->pCommandPoolCreateInfo->flags)
-        | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
-        : VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    commandPoolCreateInfo.queueFamilyIndex
-        = pContext->graphicsQueueFamilyIndex;
+    { // command pool
+        VkCommandPoolCreateInfo commandPoolCreateInfo = {
+            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        };
+        commandPoolCreateInfo.pNext
+            = (pCreateInfo && pCreateInfo->pCommandPoolCreateInfo)
+            ? (pCreateInfo->pCommandPoolCreateInfo->pNext)
+            : nullptr;
+        commandPoolCreateInfo.flags
+            = (pCreateInfo && pCreateInfo->pCommandPoolCreateInfo)
+            ? (pCreateInfo->pCommandPoolCreateInfo->flags)
+            | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+            : VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        commandPoolCreateInfo.queueFamilyIndex
+            = pContext->graphicsQueueFamilyIndex;
 
-    vxExpectSuccessOrReturn(
-        vkCreateCommandPool(
-            pContext->device,
-            &commandPoolCreateInfo,
-            pContext->pAllocator,
-            &pContext->commandPool
-        ),{
-            vxDestroyContext(pContext);
-        }
-    );
+        vxExpectSuccessOrReturn(
+            vkCreateCommandPool(
+                pContext->device,
+                &commandPoolCreateInfo,
+                pContext->pAllocator,
+                &pContext->commandPool
+            ),{
+                vxDestroyContext(pContext);
+            }
+        );
+    }
+
+    { // pipeline cache
+        VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {
+            VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        };
+        vxExpectSuccessOrReturn(
+            vkCreatePipelineCache(
+                pContext->device,
+                &pipelineCacheCreateInfo,
+                pContext->pAllocator,
+                &pContext->pipelineCache
+            ),{
+                vxDestroyContext(pContext);
+            }
+        );
+    }
 
     return VK_SUCCESS;
 }
 
 void
 vxDestroyContext(VxContext* pContext) {
-    if (pContext->commandPool) {
-        vxAssert(pContext->device);
-        vxAssertSuccess(vkDeviceWaitIdle(pContext->device));
-        vkDestroyCommandPool(
-            pContext->device,
-            pContext->commandPool,
-            pContext->pAllocator
-        );
-        pContext->commandPool = VK_NULL_HANDLE;
-    }
-
     if (pContext->device) {
         vxAssertSuccess(vkDeviceWaitIdle(pContext->device));
+        if (pContext->pipelineCache) {
+            vkDestroyPipelineCache(
+                pContext->device,
+                pContext->pipelineCache,
+                pContext->pAllocator
+            );
+            pContext->pipelineCache = VK_NULL_HANDLE;
+        }
+        if (pContext->commandPool) {
+            vkDestroyCommandPool(
+                pContext->device,
+                pContext->commandPool,
+                pContext->pAllocator
+            );
+            pContext->commandPool = VK_NULL_HANDLE;
+        }
         vkDestroyDevice(pContext->device, pContext->pAllocator);
         pContext->device = VK_NULL_HANDLE;
     }
@@ -1626,28 +1655,6 @@ vxDestroyContext(VxContext* pContext) {
     }
 
     *pContext = (VxContext)vxInit;
-}
-
-//------------------------------------------------------------------------------
-
-VkResult
-vxCreateShaderModule(
-    const VxContext* pContext,
-    const size_t     codeSize,
-    const uint32_t*  pCode,
-    VkShaderModule*  pShaderModule
-) {
-    VkShaderModuleCreateInfo shaderModuleCreateInfo = {
-        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-    };
-    shaderModuleCreateInfo.codeSize = codeSize;
-    shaderModuleCreateInfo.pCode    = pCode;
-    return vkCreateShaderModule(
-        pContext->device,
-        &shaderModuleCreateInfo,
-        pContext->pAllocator,
-        pShaderModule
-    );
 }
 
 //------------------------------------------------------------------------------
@@ -1843,7 +1850,7 @@ vxCreateCanvas(
 
         const VkPresentModeKHR* preferredPresentModes
             = pCreateInfo->preferredPresentModeCount
-            ? pCreateInfo->preferredPesentModes
+            ? pCreateInfo->preferredPresentModes
             : defaultPreferredPresentModes;
 
         for (uint32_t p = 0; p < preferredPresentModeCount; ++p)
@@ -2363,6 +2370,143 @@ vxPresentFrame(
     );
 
     return VK_SUCCESS;
+}
+
+//------------------------------------------------------------------------------
+
+static inline bool vxHasAllBits(uint64_t expected, uint64_t actual) {
+    return (expected & actual) == (expected);
+}
+
+static inline bool vxHasAnyBits(uint64_t expected, uint64_t actual) {
+    return (expected & actual) != 0;
+}
+
+VkResult
+vxAllocateMemory(
+    const VxContext* pContext,
+    const VkMemoryRequirements* pMemoryRequirements,
+    const VkMemoryPropertyFlags requiredPropertyFlags,
+    const void* pMemoryAllocateInfoExtensions,
+    VkDeviceMemory* pDeviceMemory
+) {
+    VkResult result = VK_ERROR_UNKNOWN;
+    const VkPhysicalDeviceMemoryProperties* pMemoryProperties
+        = &pContext->physicalDeviceMemoryProperties;
+
+    VkMemoryAllocateInfo allocateInfo = {
+        VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    };
+    allocateInfo.pNext = pMemoryAllocateInfoExtensions;
+    allocateInfo.allocationSize = pMemoryRequirements->size;
+
+    for (uint32_t i = 0; i < pMemoryProperties->memoryTypeCount; ++i) {
+        if (!vxHasAnyBits(pMemoryRequirements->memoryTypeBits, 1 << i)) {
+            // vxWarning("memoryType[%i] does not match memoryTypeBits\n", i);
+            continue;
+        }
+
+        const VkMemoryPropertyFlags propertyFlags
+            = pMemoryProperties->memoryTypes[i].propertyFlags;
+
+        if (!vxHasAllBits(requiredPropertyFlags, propertyFlags)) {
+            // vxWarning("memoryType[%i] does not match requiredPropertyFlags\n", i);
+            continue;
+        }
+
+        allocateInfo.memoryTypeIndex = i;
+        result = vxExpectSuccess(
+            vkAllocateMemory(
+                pContext->device,
+                &allocateInfo,
+                pContext->pAllocator,
+                pDeviceMemory
+            )
+        );
+        if (result == VK_SUCCESS) {
+            return VK_SUCCESS;
+        }
+    }
+    return result;
+}
+
+VkResult
+vxAllocateBufferMemory(
+    const VxContext* pContext,
+    const VkBuffer buffer,
+    const VkMemoryPropertyFlags memoryPropertyFlags,
+    const void* pMemoryAllocateInfoExtensions,
+    VkDeviceMemory* pDeviceMemory
+) {
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements(
+        pContext->device, buffer,
+        &memoryRequirements
+    );
+    // vxInfo(
+    //     "size: %llu, alignment: %llu, memoryTypeBits: 0b%c%c%c%c%c%c%c%c\n",
+    //     memoryRequirements.size,
+    //     memoryRequirements.alignment,
+    //     ((memoryRequirements.memoryTypeBits) & 0x80 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x40 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x20 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x10 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x08 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x04 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x02 ? '1' : '0'),
+    //     ((memoryRequirements.memoryTypeBits) & 0x01 ? '1' : '0') 
+    // );
+    return vxAllocateMemory(
+        pContext,
+        &memoryRequirements,
+        memoryPropertyFlags,
+        pMemoryAllocateInfoExtensions,
+        pDeviceMemory
+    );
+}
+
+VkResult
+vxAllocateImageMemory(
+    const VxContext* pContext,
+    const VkImage image,
+    const VkMemoryPropertyFlags memoryPropertyFlags,
+    const void* pMemoryAllocateInfoExtensions,
+    VkDeviceMemory* pDeviceMemory
+) {
+    VkMemoryRequirements memoryRequirements;
+    vkGetImageMemoryRequirements(
+        pContext->device, image,
+        &memoryRequirements
+    );
+    return vxAllocateMemory(
+        pContext,
+        &memoryRequirements,
+        memoryPropertyFlags,
+        pMemoryAllocateInfoExtensions,
+        pDeviceMemory
+    );
+}
+
+//------------------------------------------------------------------------------
+
+VkResult
+vxCreateShaderModule(
+    const VxContext* pContext,
+    const size_t     codeSize,
+    const uint32_t*  pCode,
+    VkShaderModule*  pShaderModule
+) {
+    VkShaderModuleCreateInfo shaderModuleCreateInfo = {
+        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+    };
+    shaderModuleCreateInfo.codeSize = codeSize;
+    shaderModuleCreateInfo.pCode    = pCode;
+    return vkCreateShaderModule(
+        pContext->device,
+        &shaderModuleCreateInfo,
+        pContext->pAllocator,
+        pShaderModule
+    );
 }
 
 //------------------------------------------------------------------------------

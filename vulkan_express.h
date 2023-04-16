@@ -497,19 +497,21 @@ typedef struct VxContextSurfaceCapabilities {
 } VxContextSurfaceCapabilities;
 
 typedef struct VxContext {
-    const VkAllocationCallbacks* pAllocator;
-    VkInstance                   instance;
-    VkDevice                     device;
-    VkPhysicalDevice             physicalDevice;
-    VkPhysicalDeviceProperties   physicalDeviceProperties;
-    VxContextSurfaceCapabilities surfaceCapabilities;
-    uint32_t                     surfaceFormatCount;
-    VkSurfaceFormatKHR           surfaceFormats[VX_MAX_SURFACE_FORMAT_COUNT];
-    VkQueue                      computeQueue;
-    uint32_t                     computeQueueFamilyIndex;
-    VkQueue                      graphicsQueue;
-    uint32_t                     graphicsQueueFamilyIndex;
-    VkCommandPool                commandPool;
+    const VkAllocationCallbacks*     pAllocator;
+    VkInstance                       instance;
+    VkPhysicalDevice                 physicalDevice;
+    VkPhysicalDeviceProperties       physicalDeviceProperties;
+    VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
+    VxContextSurfaceCapabilities     surfaceCapabilities;
+    uint32_t                         surfaceFormatCount;
+    VkSurfaceFormatKHR               surfaceFormats[VX_MAX_SURFACE_FORMAT_COUNT];
+    VkDevice                         device;
+    VkQueue                          computeQueue;
+    uint32_t                         computeQueueFamilyIndex;
+    VkQueue                          graphicsQueue;
+    uint32_t                         graphicsQueueFamilyIndex;
+    VkCommandPool                    commandPool;
+    VkPipelineCache                  pipelineCache;
 } VxContext;
 
 VkResult
@@ -521,16 +523,6 @@ vxCreateContext(
 void
 vxDestroyContext(
     VxContext* pContext
-);
-
-//------------------------------------------------------------------------------
-
-VkResult
-vxCreateShaderModule(
-    const VxContext* pContext,
-    const size_t     codeSize,
-    const uint32_t*  pCode,
-    VkShaderModule*  pShaderModule
 );
 
 //------------------------------------------------------------------------------
@@ -589,7 +581,7 @@ typedef struct VxCanvasCreateInfo {
     VkSurfaceFormatKHR           surfaceFormat;
     uint32_t                     swapchainImageCount;
     uint32_t                     preferredPresentModeCount;
-    VkPresentModeKHR             preferredPesentModes[VX_MAX_CANVAS_PRESENT_MODE_COUNT];
+    VkPresentModeKHR             preferredPresentModes[VX_MAX_CANVAS_PRESENT_MODE_COUNT];
     VkRenderPass                 renderPass;
     uint32_t                     additionalAttachmentCount;
     VxCanvasAttachmentCreateInfo additionalAttachmentCreateInfo[VX_MAX_CANVAS_ATTACHMENT_COUNT-1];
@@ -682,6 +674,45 @@ vxPresentFrame(
     const VxContext* pContext,
     VxCanvas*        pCanvas,
     VxCanvasFrame*   pFrame
+);
+
+//------------------------------------------------------------------------------
+
+VkResult
+vxAllocateMemory(
+    const VxContext* pContext,
+    const VkMemoryRequirements* pMemoryRequirements,
+    const VkMemoryPropertyFlags memoryPropertyFlags,
+    const void* pMemoryAllocateInfoExtensions,
+    VkDeviceMemory* pDeviceMemory
+);
+
+VkResult
+vxAllocateBufferMemory(
+    const VxContext* pContext,
+    const VkBuffer buffer,
+    const VkMemoryPropertyFlags memoryPropertyFlags,
+    const void* pMemoryAllocateInfoExtensions,
+    VkDeviceMemory* pDeviceMemory
+);
+
+VkResult
+vxAllocateImageMemory(
+    const VxContext* pContext,
+    const VkImage image,
+    const VkMemoryPropertyFlags memoryPropertyFlags,
+    const void* pMemoryAllocateInfoExtensions,
+    VkDeviceMemory* pDeviceMemory
+);
+
+//------------------------------------------------------------------------------
+
+VkResult
+vxCreateShaderModule(
+    const VxContext* pContext,
+    const size_t     codeSize,
+    const uint32_t*  pCode,
+    VkShaderModule*  pShaderModule
 );
 
 //------------------------------------------------------------------------------
