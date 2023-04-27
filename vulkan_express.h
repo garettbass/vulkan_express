@@ -395,7 +395,7 @@ VxInlineArrayDef(VkWriteDescriptorSet)
 //------------------------------------------------------------------------------
 
 #ifdef __cplusplus
-extern "C" {
+    extern "C" {
 #endif
 
 //------------------------------------------------------------------------------
@@ -408,6 +408,9 @@ vxFormatName(VkFormat format);
 
 const char*
 vxColorSpaceName(VkColorSpaceKHR colorSpace);
+
+const char*
+vxDescriptorTypeName(VkDescriptorType descriptorType);
 
 //------------------------------------------------------------------------------
 
@@ -511,18 +514,90 @@ typedef struct VxContext {
     VkQueue                          graphicsQueue;
     uint32_t                         graphicsQueueFamilyIndex;
     VkCommandPool                    commandPool;
+    VkCommandBuffer                  commandBuffer;
     VkPipelineCache                  pipelineCache;
 } VxContext;
 
 VkResult
 vxCreateContext(
-    const VxContextCreateInfo* pCreateInfo,
+    const VxContextCreateInfo* pCreateInfo, // optional
     VxContext*                 pContext
 );
+
+static inline
+VxContext
+vxContext(const VxContextCreateInfo createInfo) {
+    VxContext context;
+    vxAssertSuccess(
+        vxCreateContext(
+            &createInfo,
+            &context
+        )
+    );
+    return context;
+}
 
 void
 vxDestroyContext(
     VxContext* pContext
+);
+
+//------------------------------------------------------------------------------
+
+#ifndef VX_MAX_BIND_GROUP_BINDING_COUNT
+#define VX_MAX_BIND_GROUP_BINDING_COUNT 8
+#endif
+
+typedef struct VxBinding {
+    VkDescriptorType type;
+    VkSampler        sampler;
+    VkImageView      imageView;
+    VkImageLayout    imageLayout;
+    VkBuffer         buffer;
+    VkDeviceSize     bufferOffset;
+    VkDeviceSize     bufferRange;
+} VxBinding;
+
+typedef struct VxBindGroupCreateInfo {
+    VkShaderStageFlags  stageFlags;
+    uint32_t            bindingCount;
+    VxBinding           bindings[VX_MAX_BIND_GROUP_BINDING_COUNT];
+} VxBindGroupCreateInfo;
+
+typedef struct VxBindGroup {
+    VkDescriptorPool      descriptorPool;
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkDescriptorSet       descriptorSet;
+} VxBindGroup;
+
+VkResult
+vxCreateBindGroup(
+    const VxContext*             pContext,
+    const VxBindGroupCreateInfo* pCreateInfo,
+    VxBindGroup*                 pBindGroup
+);
+
+static inline
+VxBindGroup
+vxBindGroup(
+    const VxContext* pContext,
+    const VxBindGroupCreateInfo createInfo
+) {
+    VxBindGroup bindGroup;
+    vxAssertSuccess(
+        vxCreateBindGroup(
+            pContext,
+            &createInfo,
+            &bindGroup
+        )
+    );
+    return bindGroup;
+}
+
+void
+vxDestroyBindGroup(
+    const VxContext* pContext,
+    VxBindGroup*    pBindGroup
 );
 
 //------------------------------------------------------------------------------
@@ -632,6 +707,23 @@ vxCreateCanvas(
     VxCanvas*                 pView
 );
 
+static inline
+VxCanvas
+vxCanvas(
+    const VxContext* pContext,
+    const VxCanvasCreateInfo createInfo
+) {
+    VxCanvas canvas;
+    vxAssertSuccess(
+        vxCreateCanvas(
+            pContext,
+            &createInfo,
+            &canvas
+        )
+    );
+    return canvas;
+}
+
 void
 vxDestroyCanvas(
     const VxContext* pContext,
@@ -648,18 +740,21 @@ VkResult
 vxAcquireNextFrame(
     const VxContext* pContext,
     VxCanvas*        pCanvas,
-    uint64_t         timeout,
-    VxCanvasFrame**  ppFrame      // optional
+    VxCanvasFrame**  ppFrame // optional
 );
 
-VkResult
+VxCanvasFrame*
 vxBeginFrame(
-    const VxContext*                pContext,
-    VxCanvas*                       pCanvas,
-    uint64_t                        timeout,
-    VkCommandBufferResetFlags       commandBufferResetFlags, // optional
-    const VkCommandBufferBeginInfo* pCommandBufferBeginInfo, // optional
-    VxCanvasFrame**                 ppFrame                  // optional
+    const VxContext* pContext,
+    VxCanvas*        pCanvas
+);
+
+VkCommandBuffer
+vxCmdBeginFrameRenderPass(
+    const VxCanvas*      pCanvas,
+    const VxCanvasFrame* pFrame,
+    uint32_t             clearValueCount,
+    const VkClearValue*  pClearValues
 );
 
 VkResult
@@ -680,29 +775,112 @@ vxPresentFrame(
 
 VkResult
 vxAllocateMemory(
-    const VxContext* pContext,
+    const VxContext*            pContext,
     const VkMemoryRequirements* pMemoryRequirements,
     const VkMemoryPropertyFlags memoryPropertyFlags,
-    const void* pMemoryAllocateInfoExtensions,
-    VkDeviceMemory* pDeviceMemory
+    VkDeviceMemory*             pDeviceMemory
 );
 
 VkResult
 vxAllocateBufferMemory(
-    const VxContext* pContext,
-    const VkBuffer buffer,
+    const VxContext*            pContext,
+    const VkBuffer              buffer,
     const VkMemoryPropertyFlags memoryPropertyFlags,
-    const void* pMemoryAllocateInfoExtensions,
-    VkDeviceMemory* pDeviceMemory
+    VkDeviceMemory*             pDeviceMemory
 );
 
 VkResult
 vxAllocateImageMemory(
-    const VxContext* pContext,
-    const VkImage image,
+    const VxContext*            pContext,
+    const VkImage               image,
     const VkMemoryPropertyFlags memoryPropertyFlags,
-    const void* pMemoryAllocateInfoExtensions,
-    VkDeviceMemory* pDeviceMemory
+    VkDeviceMemory*             pDeviceMemory
+);
+
+//------------------------------------------------------------------------------
+
+typedef struct VxBufferAllocationInfo {
+    VkBufferCreateInfo    buffer;
+    VkMemoryPropertyFlags memory;
+} VxBufferAllocationInfo;
+
+typedef struct VxBufferAllocation {
+    VkBuffer       buffer;
+    VkDeviceSize   size;
+    VkDeviceMemory memory;
+} VxBufferAllocation;
+
+VkResult
+vxCreateBufferAllocation(
+    const VxContext*              pContext,
+    const VxBufferAllocationInfo* pAllocationInfo,
+    VxBufferAllocation*           pAllocation
+);
+
+void
+vxDestroyBufferAllocation(
+    const VxContext*    pContext,
+    VxBufferAllocation* pAllocation
+);
+
+VkResult
+vxCopyToBufferAllocation(
+    const VxContext*          pContext,
+    const VxBufferAllocation* dstAllocation,
+    VkDeviceSize              dstOffset,
+    VkDeviceSize              size,
+    const void*               srcData
+);
+
+static inline
+VxBufferAllocation
+vxBufferAllocation(
+    const VxContext* pContext,
+    VxBufferAllocationInfo allocationInfo
+) {
+    VxBufferAllocation allocation;
+    vxAssertSuccess(
+        vxCreateBufferAllocation(
+            pContext,
+            &allocationInfo,
+            &allocation
+        )
+    );
+    return allocation;
+}
+
+//------------------------------------------------------------------------------
+
+typedef struct VxImageAllocationInfo {
+    VkImageCreateInfo       image;
+    VkImageAspectFlags      imageAspectMask;
+    VkImageViewType         imageViewType;
+    VkMemoryPropertyFlags   memory;
+} VxImageAllocationInfo;
+
+typedef struct VxImageAllocation {
+    VkImage         image;
+    VkImageType     imageType;
+    VkImageView     imageView;
+    VkImageViewType imageViewType;
+    VkFormat        format;
+    VkExtent3D      extent;
+    uint32_t        mipLevels;
+    uint32_t        arrayLayers;
+    VkDeviceMemory  memory;
+} VxImageAllocation;
+
+VkResult
+vxCreateImageAllocation(
+    const VxContext*             pContext,
+    const VxImageAllocationInfo* pAllocationInfo,
+    VxImageAllocation*           pAllocation
+);
+
+void
+vxDestroyImageAllocation(
+    const VxContext*   pContext,
+    VxImageAllocation* pAllocation
 );
 
 //------------------------------------------------------------------------------
@@ -717,9 +895,143 @@ vxCreateShaderModule(
 
 //------------------------------------------------------------------------------
 
+static inline void
+vxDestroyDescriptorPool(const VxContext* pContext, VkDescriptorPool* pResource) {
+    vkDestroyDescriptorPool(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroyDescriptorSetLayout(const VxContext* pContext, VkDescriptorSetLayout* pResource) {
+    vkDestroyDescriptorSetLayout(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroyImage(const VxContext* pContext, VkImage* pResource) {
+    vkDestroyImage(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroyImageView(const VxContext* pContext, VkImageView* pResource) {
+    vkDestroyImageView(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroyPipeline(const VxContext* pContext, VkPipeline* pResource) {
+    vkDestroyPipeline(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroyPipelineLayout(const VxContext* pContext, VkPipelineLayout* pResource) {
+    vkDestroyPipelineLayout(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroyRenderPass(const VxContext* pContext, VkRenderPass* pResource) {
+    vkDestroyRenderPass(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxDestroySampler(const VxContext* pContext, VkSampler* pResource) {
+    vkDestroySampler(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
+static inline void
+vxFreeMemory(const VxContext* pContext, VkDeviceMemory* pResource) {
+    vkFreeMemory(pContext->device, *pResource, pContext->pAllocator);
+    *pResource = VK_NULL_HANDLE;
+}
+
 #ifdef __cplusplus
-} // extern "C"
-#endif
+
+    } // extern "C"
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VxBindGroup* pResource) {
+        vxDestroyBindGroup(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VxCanvas* pResource) {
+        vxDestroyCanvas(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VxBufferAllocation* pResource) {
+        vxDestroyBufferAllocation(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VxImageAllocation* pResource) {
+        vxDestroyImageAllocation(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkDescriptorPool* pResource) {
+        vxDestroyDescriptorPool(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkDescriptorSetLayout* pResource) {
+        vxDestroyDescriptorSetLayout(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkImage* pResource) {
+        vxDestroyImage(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkImageView* pResource) {
+        vxDestroyImageView(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkPipeline* pResource) {
+        vxDestroyPipeline(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkPipelineLayout* pResource) {
+        vxDestroyPipelineLayout(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkRenderPass* pResource) {
+        vxDestroyRenderPass(pContext, pResource);
+    }
+
+    static inline void
+    vxDestroy(const VxContext* pContext, VkSampler* pResource) {
+        vxDestroySampler(pContext, pResource);
+    }
+
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) // C11
+
+    #define vxDestroy(pContext, pResource) \
+            (_Generic((pResource), \
+                VxBindGroup*:           vxDestroyBindGroup, \
+                VxCanvas*:              vxDestroyCanvas,\
+                VxBufferAllocation*:    vxDestroyBufferAllocation, \
+                VxImageAllocation*:     vxDestroyImageAllocation, \
+                VkDescriptorPool*:      vxDestroyDescriptorPool, \
+                VkDescriptorSetLayout*: vxDestroyDescriptorSetLayout, \
+                VkImage*:               vxDestroyImage, \
+                VkImageView*:           vxDestroyImageView, \
+                VkPipeline*:            vxDestroyPipeline, \
+                VkPipelineLayout*:      vxDestroyPipelineLayout, \
+                VkRenderPass*:          vxDestroyRenderPass, \
+                VkSampler*:             vxDestroySampler \
+            )(pContext, pResource))
+
+#endif // __cplusplus
 
 //------------------------------------------------------------------------------
 

@@ -81,23 +81,27 @@ extern "C" {
 #define vxPrintf printf
 #endif
 
-#define vxInfo(format, ...) \
+#ifndef vxPuts
+#define vxPuts puts
+#endif
+
+#define vxInfof(format, ...) \
         vxPrintf(VX_INFO("%s:%i: " format "\n"),__FILE__,__LINE__,__VA_ARGS__)
 
-#define vxWarning(format, ...) \
+#define vxWarningf(format, ...) \
         vxPrintf(VX_WARNING("%s:%i: " format "\n"),__FILE__,__LINE__,__VA_ARGS__)
 
-#define vxError(format, ...) \
+#define vxErrorf(format, ...) \
         vxPrintf(VX_ERROR("%s:%i: " format "\n"),__FILE__,__LINE__,__VA_ARGS__)
 
-#define vxDiagnostic(format, ...) \
-        vxInfo(format,__VA_ARGS__)
+#define vxDiagnosticf(format, ...) \
+        vxInfof(format,__VA_ARGS__)
 
 #define vxExpect(expr) \
-        ((expr)||(vxWarning("vxExpect(" #expr ") failed"),0))
+        ((expr)||(vxPuts(VX_WARNING("vxExpect(" #expr ") failed")),0))
 
 #define vxAssert(expr) \
-        ((expr)||(vxError("vxAssert(" #expr ") failed"),exit(1),0))
+        ((expr)||(vxPuts(VX_ERROR("vxAssert(" #expr ") failed")),exit(1),0))
 
 //------------------------------------------------------------------------------
 
@@ -757,6 +761,52 @@ const char* vxColorSpaceName(VkColorSpaceKHR colorSpace) {
     return vxEnumNameBuffer;
 }
 
+const char* vxDescriptorTypeName(VkDescriptorType descriptorType) {
+    switch (descriptorType) {
+        case    VK_DESCRIPTOR_TYPE_SAMPLER:
+        return "VK_DESCRIPTOR_TYPE_SAMPLER";
+        case    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+        return "VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER";
+        case    VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+        return "VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE";
+        case    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+        return "VK_DESCRIPTOR_TYPE_STORAGE_IMAGE";
+        case    VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+        return "VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER";
+        case    VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+        return "VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER";
+        case    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+        return "VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER";
+        case    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+        return "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER";
+        case    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+        return "VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC";
+        case    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+        return "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC";
+        case    VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+        return "VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT";
+        case    VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+        return "VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK";
+        case    VK_DESCRIPTOR_TYPE_MAX_ENUM:
+        return "VK_DESCRIPTOR_TYPE_MAX_ENUM";
+        case    VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+        return "VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR";
+        case    VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+        return "VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV";
+        case    VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM:
+        return "VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM";
+        case    VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM:
+        return "VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM";
+        case    VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
+        return "VK_DESCRIPTOR_TYPE_MUTABLE_EXT";
+    }
+    snprintf(
+        vxEnumNameBuffer, sizeof(vxEnumNameBuffer),
+        "((VkDescriptorType)%i)", descriptorType
+    );
+    return vxEnumNameBuffer;
+}
+
 //------------------------------------------------------------------------------
 
 VkResult vxExpectNonErrorCallback(
@@ -1029,7 +1079,7 @@ vxSelectPhysicalDevice(
     }
 
     if (!preferred.physicalDevice && !fallback.physicalDevice) {
-        vxDiagnostic("vxSelectPhysicalDevice(): no viable physical device");
+        vxDiagnosticf("vxSelectPhysicalDevice(): no viable physical device");
         return VK_ERROR_UNKNOWN;
     }
 
@@ -1604,6 +1654,23 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
                 vxDestroyContext(pContext);
             }
         );
+
+        VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        };
+        commandBufferAllocateInfo.commandPool = pContext->commandPool;
+        commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        commandBufferAllocateInfo.commandBufferCount = 1;
+
+        vxExpectSuccessOrReturn(
+            vkAllocateCommandBuffers(
+                pContext->device,
+                &commandBufferAllocateInfo,
+                &pContext->commandBuffer
+            ),{
+                vxDestroyContext(pContext);
+            }
+        );
     }
 
     { // pipeline cache
@@ -1637,6 +1704,15 @@ vxDestroyContext(VxContext* pContext) {
             );
             pContext->pipelineCache = VK_NULL_HANDLE;
         }
+        if (pContext->commandBuffer) {
+            vkFreeCommandBuffers(
+                pContext->device,
+                pContext->commandPool,
+                1,
+                &pContext->commandBuffer
+            );
+            pContext->commandBuffer = VK_NULL_HANDLE;
+        }
         if (pContext->commandPool) {
             vkDestroyCommandPool(
                 pContext->device,
@@ -1655,6 +1731,176 @@ vxDestroyContext(VxContext* pContext) {
     }
 
     *pContext = (VxContext)vxInit;
+}
+
+//------------------------------------------------------------------------------
+
+VkResult
+vxCreateBindGroup(
+    const VxContext*             pContext,
+    const VxBindGroupCreateInfo* pCreateInfo,
+    VxBindGroup*                 pBindGroup
+) {
+    *pBindGroup = (VxBindGroup)vxInit;
+
+    { // descriptorPool
+        VkDescriptorPoolSize poolSizes[VX_MAX_BIND_GROUP_BINDING_COUNT];
+        for (uint32_t i = 0; i < pCreateInfo->bindingCount; ++i) {
+            poolSizes[i] = (VkDescriptorPoolSize)vxInit;
+            poolSizes[i].type = pCreateInfo->bindings[i].type;
+            poolSizes[i].descriptorCount = 1;
+        }
+
+        VkDescriptorPoolCreateInfo poolCreateInfo = {
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        };
+        poolCreateInfo.maxSets = 1;
+        poolCreateInfo.poolSizeCount = pCreateInfo->bindingCount;
+        poolCreateInfo.pPoolSizes = poolSizes;
+
+        vxExpectSuccessOrReturn(
+            vkCreateDescriptorPool(
+                pContext->device,
+                &poolCreateInfo,
+                pContext->pAllocator,
+                &pBindGroup->descriptorPool
+            ),{
+                vxDestroyBindGroup(pContext, pBindGroup);
+            }
+        );
+    }
+
+    { // layout
+        VkDescriptorSetLayoutBinding bindings[VX_MAX_BIND_GROUP_BINDING_COUNT];
+        for (uint32_t i = 0; i < pCreateInfo->bindingCount; ++i) {
+            bindings[i] = (VkDescriptorSetLayoutBinding)vxInit;
+            bindings[i].binding = i;
+            bindings[i].descriptorType = pCreateInfo->bindings[i].type;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = pCreateInfo->stageFlags;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        };
+        layoutCreateInfo.bindingCount = pCreateInfo->bindingCount;
+        layoutCreateInfo.pBindings = bindings;
+
+        vxExpectSuccessOrReturn(
+            vkCreateDescriptorSetLayout(
+                pContext->device,
+                &layoutCreateInfo,
+                pContext->pAllocator,
+                &pBindGroup->descriptorSetLayout
+            ),{
+                vxDestroyBindGroup(pContext, pBindGroup);
+            }
+        );
+    }
+
+    { // descriptorSet
+        VkDescriptorSetAllocateInfo setAllocateInfo = {
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        };
+        setAllocateInfo.descriptorPool = pBindGroup->descriptorPool;
+        setAllocateInfo.descriptorSetCount = 1;
+        setAllocateInfo.pSetLayouts = &pBindGroup->descriptorSetLayout;
+
+        vxExpectSuccessOrReturn(
+            vkAllocateDescriptorSets(
+                pContext->device,
+                &setAllocateInfo,
+                &pBindGroup->descriptorSet
+            ),{
+                vxDestroyBindGroup(pContext, pBindGroup);
+            }
+        );
+    }
+
+    VkWriteDescriptorSet descriptorWrites[VX_MAX_BIND_GROUP_BINDING_COUNT];
+    VkDescriptorImageInfo       imageInfo[VX_MAX_BIND_GROUP_BINDING_COUNT];
+    VkDescriptorBufferInfo     bufferInfo[VX_MAX_BIND_GROUP_BINDING_COUNT];
+    for (uint32_t i = 0; i < pCreateInfo->bindingCount; ++i) {
+        descriptorWrites[i] = (VkWriteDescriptorSet)vxInit;
+        descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[i].dstSet = pBindGroup->descriptorSet;
+        descriptorWrites[i].dstBinding = i;
+        descriptorWrites[i].dstArrayElement = 0;
+        descriptorWrites[i].descriptorCount = 1;
+        descriptorWrites[i].descriptorType = pCreateInfo->bindings[i].type;
+        switch (descriptorWrites[i].descriptorType) {
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+                imageInfo[i] = (VkDescriptorImageInfo)vxInit;
+                imageInfo[i].sampler     = pCreateInfo->bindings[i].sampler;
+                descriptorWrites[i].pImageInfo = &imageInfo[i];
+                break;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                imageInfo[i] = (VkDescriptorImageInfo)vxInit;
+                imageInfo[i].sampler     = pCreateInfo->bindings[i].sampler;
+                imageInfo[i].imageView   = pCreateInfo->bindings[i].imageView;
+                imageInfo[i].imageLayout = pCreateInfo->bindings[i].imageLayout;
+                descriptorWrites[i].pImageInfo = &imageInfo[i];
+                break;
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                imageInfo[i] = (VkDescriptorImageInfo)vxInit;
+                imageInfo[i].imageView   = pCreateInfo->bindings[i].imageView;
+                imageInfo[i].imageLayout = pCreateInfo->bindings[i].imageLayout;
+                descriptorWrites[i].pImageInfo = &imageInfo[i];
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                vxErrorf("not implemented");
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+                bufferInfo[i] = (VkDescriptorBufferInfo)vxInit;
+                bufferInfo[i].buffer = pCreateInfo->bindings[i].buffer;
+                bufferInfo[i].offset = pCreateInfo->bindings[i].bufferOffset;
+                bufferInfo[i].range  = pCreateInfo->bindings[i].bufferRange;
+                descriptorWrites[i].pBufferInfo = &bufferInfo[i];
+                break;
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+            default:
+                vxErrorf("not implemented");
+        }
+    }
+
+    vkUpdateDescriptorSets(
+        pContext->device,
+        pCreateInfo->bindingCount,
+        descriptorWrites,
+        0, NULL
+    );
+
+    return VK_SUCCESS;
+}
+
+void
+vxDestroyBindGroup(
+    const VxContext* pContext,
+    VxBindGroup*     pBindGroup
+) {
+    if (pBindGroup->descriptorSetLayout) {
+        vkDestroyDescriptorSetLayout(
+            pContext->device,
+            pBindGroup->descriptorSetLayout,
+            pContext->pAllocator
+        );
+        pBindGroup->descriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (pBindGroup->descriptorPool) {
+        vkDestroyDescriptorPool(
+            pContext->device,
+            pBindGroup->descriptorPool,
+            pContext->pAllocator
+        );
+        pBindGroup->descriptorPool = VK_NULL_HANDLE;
+    }
+
+    *pBindGroup = (VxBindGroup)vxInit;
 }
 
 //------------------------------------------------------------------------------
@@ -1730,21 +1976,21 @@ vxCreateCanvas(
 
             #else // !defined(VK_USE_PLATFORM_WIN32_KHR)
 
-                vxDiagnostic("VX_WINDOW_HANDLE_TYPE_HWND unavailable");
+                vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_HWND unavailable");
                 return VK_ERROR_FEATURE_NOT_PRESENT;
 
             #endif
         }
         case VX_WINDOW_HANDLE_TYPE_NSWINDOW: {
-            vxDiagnostic("VX_WINDOW_HANDLE_TYPE_NSWINDOW not implemented");
+            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_NSWINDOW not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         case VX_WINDOW_HANDLE_TYPE_XLIB: {
-            vxDiagnostic("VX_WINDOW_HANDLE_TYPE_XLIB not implemented");
+            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_XLIB not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         case VX_WINDOW_HANDLE_TYPE_WAYLAND: {
-            vxDiagnostic("VX_WINDOW_HANDLE_TYPE_WAYLAND not implemented");
+            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_WAYLAND not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         case VX_WINDOW_HANDLE_TYPE_GLFW: {
@@ -1762,17 +2008,17 @@ vxCreateCanvas(
 
             #else
 
-                vxDiagnostic("VX_WINDOW_HANDLE_TYPE_GLFW unavailable");
+                vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_GLFW unavailable");
                 return VK_ERROR_FEATURE_NOT_PRESENT;
 
             #endif
         }
         case VX_WINDOW_HANDLE_TYPE_SDL: {
-            vxDiagnostic("VX_WINDOW_HANDLE_TYPE_SDL not implemented");
+            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_SDL not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         default: {
-            vxDiagnostic(
+            vxDiagnosticf(
                 "((VxSwapchainWindowHandleType)%u) unsupported",
                 windowHandleType
             );
@@ -2197,7 +2443,7 @@ vxResizeCanvas(const VxContext* pContext, VxCanvas* pCanvas) {
         vxCreateCanvasFrames(pContext, pCanvas),{}
     );
 
-    vxInfo(
+    vxInfof(
         "vxResizeCanvas: {%u, %u}\n",
         pCanvas->extent.width,
         pCanvas->extent.height
@@ -2212,7 +2458,6 @@ VkResult
 vxAcquireNextFrame(
     const VxContext* pContext,
     VxCanvas*        pCanvas,
-    uint64_t         timeout,
     VxCanvasFrame**  ppFrame
 ) {
     if (ppFrame) *ppFrame = nullptr;
@@ -2226,6 +2471,8 @@ vxAcquireNextFrame(
     VxCanvasFrame* pNextFrame = &pCanvas->frames[nextFrameIndex];
 
     const VkBool32 waitAll = VK_TRUE;
+
+    const uint64_t timeout = ~(uint64_t)0u;
 
     vxExpectSuccessOrReturn(
         vkWaitForFences(
@@ -2261,52 +2508,67 @@ vxAcquireNextFrame(
     return VK_SUCCESS;
 }
 
-VkResult
+VxCanvasFrame*
 vxBeginFrame(
-    const VxContext*                pContext,
-    VxCanvas*                       pCanvas,
-    uint64_t                        timeout,
-    VkCommandBufferResetFlags       commandBufferResetFlags, // optional
-    const VkCommandBufferBeginInfo* pCommandBufferBeginInfo, // optional
-    VxCanvasFrame**                 ppFrame                  // optional
+    const VxContext* pContext,
+    VxCanvas*        pCanvas
 ) {
-    if (ppFrame) *ppFrame = nullptr;
-
     VxCanvasFrame* pFrame = nullptr;
 
-    vxExpectSuccessOrReturn(
+    vxAssertSuccess(
         vxAcquireNextFrame(
             pContext,
             pCanvas,
-            timeout,
             &pFrame
-        ),{}
+        )
     );
 
-    vxExpectSuccessOrReturn(
+    const VkCommandBufferResetFlags commandBufferResetFlags = 0;
+
+    vxAssertSuccess(
         vkResetCommandBuffer(
             pFrame->commandBuffer,
             commandBufferResetFlags
-        ),{}
+        )
     );
 
     VkCommandBufferBeginInfo commandBufferBeginInfo = {
         VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     };
-    if (pCommandBufferBeginInfo) {
-        commandBufferBeginInfo = *pCommandBufferBeginInfo;
-    }
 
-    vxExpectSuccessOrReturn(
+    vxAssertSuccess(
         vkBeginCommandBuffer(
             pFrame->commandBuffer,
             &commandBufferBeginInfo
-        ),{}
+        )
     );
 
-    if (ppFrame) *ppFrame = pFrame;
+    return pFrame;
+}
 
-    return VK_SUCCESS;
+VkCommandBuffer
+vxCmdBeginFrameRenderPass(
+    const VxCanvas*      pCanvas,
+    const VxCanvasFrame* pFrame,
+    uint32_t             clearValueCount,
+    const VkClearValue*  pClearValues
+) {
+    VkRenderPassBeginInfo renderPassInfo = {
+        VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+    };
+    renderPassInfo.renderPass        = pCanvas->renderPass;
+    renderPassInfo.framebuffer       = pFrame->framebuffer;
+    renderPassInfo.renderArea.extent = pCanvas->extent;
+    renderPassInfo.clearValueCount   = clearValueCount;
+    renderPassInfo.pClearValues      = pClearValues;
+
+    vkCmdBeginRenderPass(
+        pFrame->commandBuffer,
+        &renderPassInfo,
+        VK_SUBPASS_CONTENTS_INLINE
+    );
+
+    return pFrame->commandBuffer;
 }
 
 VkResult
@@ -2386,8 +2648,7 @@ VkResult
 vxAllocateMemory(
     const VxContext* pContext,
     const VkMemoryRequirements* pMemoryRequirements,
-    const VkMemoryPropertyFlags requiredPropertyFlags,
-    const void* pMemoryAllocateInfoExtensions,
+    const VkMemoryPropertyFlags memoryPropertyFlags,
     VkDeviceMemory* pDeviceMemory
 ) {
     VkResult result = VK_ERROR_UNKNOWN;
@@ -2397,20 +2658,19 @@ vxAllocateMemory(
     VkMemoryAllocateInfo allocateInfo = {
         VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
     };
-    allocateInfo.pNext = pMemoryAllocateInfoExtensions;
     allocateInfo.allocationSize = pMemoryRequirements->size;
 
     for (uint32_t i = 0; i < pMemoryProperties->memoryTypeCount; ++i) {
         if (!vxHasAnyBits(pMemoryRequirements->memoryTypeBits, 1 << i)) {
-            // vxWarning("memoryType[%i] does not match memoryTypeBits\n", i);
+            // vxWarningf("memoryType[%i] does not match memoryTypeBits\n", i);
             continue;
         }
 
         const VkMemoryPropertyFlags propertyFlags
             = pMemoryProperties->memoryTypes[i].propertyFlags;
 
-        if (!vxHasAllBits(requiredPropertyFlags, propertyFlags)) {
-            // vxWarning("memoryType[%i] does not match requiredPropertyFlags\n", i);
+        if (!vxHasAllBits(memoryPropertyFlags, propertyFlags)) {
+            // vxWarningf("memoryType[%i] does not match memoryPropertyFlags\n", i);
             continue;
         }
 
@@ -2435,7 +2695,6 @@ vxAllocateBufferMemory(
     const VxContext* pContext,
     const VkBuffer buffer,
     const VkMemoryPropertyFlags memoryPropertyFlags,
-    const void* pMemoryAllocateInfoExtensions,
     VkDeviceMemory* pDeviceMemory
 ) {
     VkMemoryRequirements memoryRequirements;
@@ -2443,24 +2702,10 @@ vxAllocateBufferMemory(
         pContext->device, buffer,
         &memoryRequirements
     );
-    // vxInfo(
-    //     "size: %llu, alignment: %llu, memoryTypeBits: 0b%c%c%c%c%c%c%c%c\n",
-    //     memoryRequirements.size,
-    //     memoryRequirements.alignment,
-    //     ((memoryRequirements.memoryTypeBits) & 0x80 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x40 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x20 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x10 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x08 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x04 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x02 ? '1' : '0'),
-    //     ((memoryRequirements.memoryTypeBits) & 0x01 ? '1' : '0') 
-    // );
     return vxAllocateMemory(
         pContext,
         &memoryRequirements,
         memoryPropertyFlags,
-        pMemoryAllocateInfoExtensions,
         pDeviceMemory
     );
 }
@@ -2470,7 +2715,6 @@ vxAllocateImageMemory(
     const VxContext* pContext,
     const VkImage image,
     const VkMemoryPropertyFlags memoryPropertyFlags,
-    const void* pMemoryAllocateInfoExtensions,
     VkDeviceMemory* pDeviceMemory
 ) {
     VkMemoryRequirements memoryRequirements;
@@ -2482,9 +2726,221 @@ vxAllocateImageMemory(
         pContext,
         &memoryRequirements,
         memoryPropertyFlags,
-        pMemoryAllocateInfoExtensions,
         pDeviceMemory
     );
+}
+
+//------------------------------------------------------------------------------
+
+VkResult
+vxCreateBufferAllocation(
+    const VxContext*              pContext,
+    const VxBufferAllocationInfo* pAllocationInfo,
+    VxBufferAllocation*           pAllocation
+) {
+    *pAllocation = (VxBufferAllocation)vxInit;
+
+    vxExpectSuccessOrReturn(
+        vkCreateBuffer(
+            pContext->device,
+            &pAllocationInfo->buffer,
+            pContext->pAllocator,
+            &pAllocation->buffer
+        ),{
+            vxDestroyBufferAllocation(pContext, pAllocation);
+        }
+    );
+
+    vxExpectSuccessOrReturn(
+        vxAllocateBufferMemory(
+            pContext,
+            pAllocation->buffer,
+            pAllocationInfo->memory,
+            &pAllocation->memory
+        ),{
+            vxDestroyBufferAllocation(pContext, pAllocation);
+        }
+    );
+
+    const VkDeviceSize memoryOffset = 0;
+
+    vxExpectSuccessOrReturn(
+        vkBindBufferMemory(
+            pContext->device,
+            pAllocation->buffer,
+            pAllocation->memory,
+            memoryOffset
+        ),{
+            vxDestroyBufferAllocation(pContext, pAllocation);
+        }
+    );
+
+    pAllocation->size = pAllocationInfo->buffer.size;
+
+    return VK_SUCCESS;
+}
+
+void
+vxDestroyBufferAllocation(
+    const VxContext* pContext,
+    VxBufferAllocation* pAllocation
+) {
+    if (pAllocation->buffer) {
+        vkDestroyBuffer(
+            pContext->device,
+            pAllocation->buffer,
+            pContext->pAllocator
+        );
+        pAllocation->buffer = VK_NULL_HANDLE;
+    }
+    if (pAllocation->memory) {
+        vkFreeMemory(
+            pContext->device,
+            pAllocation->memory,
+            pContext->pAllocator
+        );
+        pAllocation->memory = VK_NULL_HANDLE;
+    }
+    *pAllocation = (VxBufferAllocation)vxInit;
+}
+
+VkResult
+vxCopyToBufferAllocation(
+    const VxContext*          pContext,
+    const VxBufferAllocation* dstAllocation,
+    VkDeviceSize              dstOffset,
+    VkDeviceSize              size,
+    const void*               srcData
+) {
+    const VkMemoryMapFlags flags = 0;
+
+    void* dstData = nullptr;
+
+    vxExpectSuccessOrReturn(
+        vkMapMemory(
+            pContext->device,
+            dstAllocation->memory,
+            dstOffset, size, flags,
+            &dstData
+        ),{}
+    );
+
+    memcpy(dstData, srcData, (size_t)size);
+
+    vkUnmapMemory(pContext->device, dstAllocation->memory);
+
+    return VK_SUCCESS;
+}
+
+//------------------------------------------------------------------------------
+
+VkResult
+vxCreateImageAllocation(
+    const VxContext*             pContext,
+    const VxImageAllocationInfo* pAllocationInfo,
+    VxImageAllocation*           pAllocation
+) {
+    *pAllocation = (VxImageAllocation)vxInit;
+
+    vxExpectSuccessOrReturn(
+        vkCreateImage(
+            pContext->device,
+            &pAllocationInfo->image,
+            pContext->pAllocator,
+            &pAllocation->image
+        ),{
+            vxDestroyImageAllocation(pContext, pAllocation);
+        }
+    );
+
+    vxExpectSuccessOrReturn(
+        vxAllocateImageMemory(
+            pContext,
+            pAllocation->image,
+            pAllocationInfo->memory,
+            &pAllocation->memory
+        ),{
+            vxDestroyImageAllocation(pContext, pAllocation);
+        }
+    );
+
+    const VkDeviceSize memoryOffset = 0;
+
+    vxExpectSuccessOrReturn(
+        vkBindImageMemory(
+            pContext->device,
+            pAllocation->image,
+            pAllocation->memory,
+            memoryOffset
+        ),{
+            vxDestroyImageAllocation(pContext, pAllocation);
+        }
+    );
+
+    VkImageSubresourceRange subresourceRange = vxInit;
+    subresourceRange.aspectMask = pAllocationInfo->imageAspectMask;
+    subresourceRange.baseMipLevel = 0;
+    subresourceRange.levelCount = pAllocationInfo->image.mipLevels;
+    subresourceRange.baseArrayLayer = 0;
+    subresourceRange.layerCount = pAllocationInfo->image.arrayLayers;
+
+    VkImageViewCreateInfo imageViewCreateInfo = {
+        VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+    };
+    imageViewCreateInfo.image = pAllocation->image;
+    imageViewCreateInfo.viewType = pAllocationInfo->imageViewType;
+    imageViewCreateInfo.format = pAllocationInfo->image.format;
+    imageViewCreateInfo.subresourceRange = subresourceRange;
+
+    vxExpectSuccessOrReturn(
+        vkCreateImageView(
+            pContext->device,
+            &imageViewCreateInfo,
+            pContext->pAllocator,
+            &pAllocation->imageView
+        ),{
+            vxDestroyImageAllocation(pContext, pAllocation);
+        }
+    );
+
+    pAllocation->imageType   = pAllocationInfo->image.imageType;
+    pAllocation->format      = pAllocationInfo->image.format;
+    pAllocation->extent      = pAllocationInfo->image.extent;
+    pAllocation->mipLevels   = pAllocationInfo->image.mipLevels;
+    pAllocation->arrayLayers = pAllocationInfo->image.arrayLayers;
+
+    return VK_SUCCESS;
+}
+
+void
+vxDestroyImageAllocation(
+    const VxContext*   pContext,
+    VxImageAllocation* pAllocation
+) {
+    if (pAllocation->imageView) {
+        vkDestroyImageView(
+            pContext->device,
+            pAllocation->imageView,
+            pContext->pAllocator
+        );
+    }
+    if (pAllocation->image) {
+        vkDestroyImage(
+            pContext->device,
+            pAllocation->image,
+            pContext->pAllocator
+        );
+        pAllocation->image = VK_NULL_HANDLE;
+    }
+    if (pAllocation->memory) {
+        vkFreeMemory(
+            pContext->device,
+            pAllocation->memory,
+            pContext->pAllocator
+        );
+        pAllocation->memory = VK_NULL_HANDLE;
+    }
+    *pAllocation = (VxImageAllocation)vxInit;
 }
 
 //------------------------------------------------------------------------------
