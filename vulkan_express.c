@@ -81,10 +81,6 @@ extern "C" {
 #define vxPrintf printf
 #endif
 
-#ifndef vxPuts
-#define vxPuts puts
-#endif
-
 #define vxInfof(format, ...) \
         vxPrintf(VX_INFO("%s:%i: " format "\n"),__FILE__,__LINE__,__VA_ARGS__)
 
@@ -93,15 +89,6 @@ extern "C" {
 
 #define vxErrorf(format, ...) \
         vxPrintf(VX_ERROR("%s:%i: " format "\n"),__FILE__,__LINE__,__VA_ARGS__)
-
-#define vxDiagnosticf(format, ...) \
-        vxInfof(format,__VA_ARGS__)
-
-#define vxExpect(expr) \
-        ((expr)||(vxPuts(VX_WARNING("vxExpect(" #expr ") failed")),0))
-
-#define vxAssert(expr) \
-        ((expr)||(vxPuts(VX_ERROR("vxAssert(" #expr ") failed")),exit(1),0))
 
 //------------------------------------------------------------------------------
 
@@ -809,6 +796,37 @@ const char* vxDescriptorTypeName(VkDescriptorType descriptorType) {
 
 //------------------------------------------------------------------------------
 
+bool
+vxExpectCallback(
+    const char* file, const int line,
+    const char* expr, const bool ok
+) {
+    if (!ok) {
+        vxPrintf(
+            VX_ERROR("%s:%i: vxExpect(%s) failed\n"),
+            file, line, expr
+        );
+    }
+    return ok;
+}
+
+bool
+vxAssertCallback(
+    const char* file, const int line,
+    const char* expr, const bool ok
+) {
+    if (!ok) {
+        vxPrintf(
+            VX_ERROR("%s:%i: vxAssert(%s) failed\n"),
+            file, line, expr
+        );
+        exit(1);
+    }
+    return ok;
+}
+
+//------------------------------------------------------------------------------
+
 VkResult vxExpectNonErrorCallback(
     const char* file, const int line,
     const char* expr, const VkResult result
@@ -999,8 +1017,9 @@ vxSelectPhysicalDevice(
     typedef struct VxPhysicalDeviceInfo {
         VkPhysicalDevice             physicalDevice;
         VkPhysicalDeviceProperties   physicalDeviceProperties;
-        uint32_t                     computeQueueFamilyIndex;
         uint32_t                     graphicsQueueFamilyIndex;
+        uint32_t                     computeQueueFamilyIndex;
+        uint32_t                     transferQueueFamilyIndex;
     } VxPhysicalDeviceInfo;
 
     VxPhysicalDeviceInfo preferred = vxInit;
@@ -1035,6 +1054,14 @@ vxSelectPhysicalDevice(
         if (!vxFindQueueFamilyIndex(
                 queueFamilyPropertyCount,
                 queueFamilyProperties,
+                VK_QUEUE_GRAPHICS_BIT,
+                &candidate.graphicsQueueFamilyIndex
+            ))
+            continue;
+
+        if (!vxFindQueueFamilyIndex(
+                queueFamilyPropertyCount,
+                queueFamilyProperties,
                 VK_QUEUE_COMPUTE_BIT,
                 &candidate.computeQueueFamilyIndex
             ))
@@ -1043,8 +1070,8 @@ vxSelectPhysicalDevice(
         if (!vxFindQueueFamilyIndex(
                 queueFamilyPropertyCount,
                 queueFamilyProperties,
-                VK_QUEUE_GRAPHICS_BIT,
-                &candidate.graphicsQueueFamilyIndex
+                VK_QUEUE_TRANSFER_BIT,
+                &candidate.transferQueueFamilyIndex
             ))
             continue;
 
@@ -1079,7 +1106,7 @@ vxSelectPhysicalDevice(
     }
 
     if (!preferred.physicalDevice && !fallback.physicalDevice) {
-        vxDiagnosticf("vxSelectPhysicalDevice(): no viable physical device");
+        vxErrorf("vxSelectPhysicalDevice(): no viable physical device");
         return VK_ERROR_UNKNOWN;
     }
 
@@ -1090,8 +1117,9 @@ vxSelectPhysicalDevice(
 
     pContext->physicalDevice           = selected.physicalDevice;
     pContext->physicalDeviceProperties = selected.physicalDeviceProperties;
-    pContext->computeQueueFamilyIndex  = selected.computeQueueFamilyIndex;
     pContext->graphicsQueueFamilyIndex = selected.graphicsQueueFamilyIndex;
+    pContext->computeQueueFamilyIndex  = selected.computeQueueFamilyIndex;
+    pContext->transferQueueFamilyIndex = selected.transferQueueFamilyIndex;
     return VK_SUCCESS;
 }
 
@@ -1347,7 +1375,7 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
             ->pInstanceCreateInfo
             ->pApplicationInfo
             ->apiVersion
-        : VK_API_VERSION_1_3;
+        : VK_API_VERSION_1_2;
 
     const VkPhysicalDeviceType preferredDeviceType =
         pCreateInfo
@@ -1531,39 +1559,55 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
         VkDeviceQueueCreateInfo queueCreateInfo[] = {
             { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO },
             { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO },
+            { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO },
         };
 
-        // compute
-        queueCreateInfo[0].queueFamilyIndex = pContext->computeQueueFamilyIndex;
+        uint32_t queueCreateInfoCount = 1;
+
+        // graphics queue
+        queueCreateInfo[0].queueFamilyIndex = pContext->graphicsQueueFamilyIndex;
         queueCreateInfo[0].queueCount = 1;
         queueCreateInfo[0].pQueuePriorities = queuePriorities;
 
-        // graphics
-        queueCreateInfo[1].queueFamilyIndex = pContext->graphicsQueueFamilyIndex;
-        queueCreateInfo[1].queueCount = 1;
-        queueCreateInfo[1].pQueuePriorities = queuePriorities;
-
-        const uint32_t queueCreateInfoCount =
-            pContext->computeQueueFamilyIndex ==
+        // compute queue (if distinct from graphics queue)
+        if (pContext->computeQueueFamilyIndex !=
             pContext->graphicsQueueFamilyIndex
-            ? 1
-            : 2;
+        ) {
+            uint32_t i = queueCreateInfoCount;
+            queueCreateInfo[i].queueFamilyIndex = pContext->computeQueueFamilyIndex;
+            queueCreateInfo[i].queueCount = 1;
+            queueCreateInfo[i].pQueuePriorities = queuePriorities;
+            queueCreateInfoCount += 1;
+        }
+
+        // transfer queue (if distinct from graphics and compute queues)
+        if (pContext->transferQueueFamilyIndex !=
+            pContext->graphicsQueueFamilyIndex &&
+            pContext->transferQueueFamilyIndex !=
+            pContext->computeQueueFamilyIndex
+        ) {
+            uint32_t i = queueCreateInfoCount;
+            queueCreateInfo[i].queueFamilyIndex = pContext->transferQueueFamilyIndex;
+            queueCreateInfo[i].queueCount = 1;
+            queueCreateInfo[i].pQueuePriorities = queuePriorities;
+            queueCreateInfoCount += 1;
+        }
 
         const char* extensions[] = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         };
 
-        VkPhysicalDeviceVulkan13Features vk13features = {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        };
-        vk13features.synchronization2 = true;
-        vk13features.dynamicRendering = true;
-        vk13features.maintenance4     = true;
+        // VkPhysicalDeviceVulkan13Features vk13features = {
+        //     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        // };
+        // vk13features.synchronization2 = true;
+        // vk13features.dynamicRendering = true;
+        // vk13features.maintenance4     = true;
 
         VkPhysicalDeviceVulkan12Features vk12features = {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         };
-        vk12features.pNext = &vk13features;
+        // vk12features.pNext = &vk13features;
         vk12features.drawIndirectCount = true;
         vk12features.storageBuffer8BitAccess = true;
         vk12features.uniformAndStorageBuffer8BitAccess = true;
@@ -1598,6 +1642,8 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
         deviceCreateInfo.enabledExtensionCount = vxLengthOf(extensions);
         deviceCreateInfo.ppEnabledExtensionNames = extensions;
 
+        vxInfof("queueCreateInfoCount: %u", queueCreateInfoCount);
+
         vxAssert(pContext->physicalDevice);
 
         vxExpectSuccessOrReturn(
@@ -1618,14 +1664,20 @@ vxCreateContext(const VxContextCreateInfo* pCreateInfo, VxContext* pContext) {
 
     vkGetDeviceQueue(
         pContext->device,
+        pContext->graphicsQueueFamilyIndex, 0,
+        &pContext->graphicsQueue
+    );
+
+    vkGetDeviceQueue(
+        pContext->device,
         pContext->computeQueueFamilyIndex, 0,
         &pContext->computeQueue
     );
 
     vkGetDeviceQueue(
         pContext->device,
-        pContext->graphicsQueueFamilyIndex, 0,
-        &pContext->graphicsQueue
+        pContext->transferQueueFamilyIndex, 0,
+        &pContext->transferQueue
     );
 
     { // command pool
@@ -1976,21 +2028,21 @@ vxCreateCanvas(
 
             #else // !defined(VK_USE_PLATFORM_WIN32_KHR)
 
-                vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_HWND unavailable");
+                vxErrorf("VX_WINDOW_HANDLE_TYPE_HWND unavailable");
                 return VK_ERROR_FEATURE_NOT_PRESENT;
 
             #endif
         }
         case VX_WINDOW_HANDLE_TYPE_NSWINDOW: {
-            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_NSWINDOW not implemented");
+            vxErrorf("VX_WINDOW_HANDLE_TYPE_NSWINDOW not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         case VX_WINDOW_HANDLE_TYPE_XLIB: {
-            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_XLIB not implemented");
+            vxErrorf("VX_WINDOW_HANDLE_TYPE_XLIB not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         case VX_WINDOW_HANDLE_TYPE_WAYLAND: {
-            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_WAYLAND not implemented");
+            vxErrorf("VX_WINDOW_HANDLE_TYPE_WAYLAND not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         case VX_WINDOW_HANDLE_TYPE_GLFW: {
@@ -2008,17 +2060,17 @@ vxCreateCanvas(
 
             #else
 
-                vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_GLFW unavailable");
+                vxErrorf("VX_WINDOW_HANDLE_TYPE_GLFW unavailable");
                 return VK_ERROR_FEATURE_NOT_PRESENT;
 
             #endif
         }
         case VX_WINDOW_HANDLE_TYPE_SDL: {
-            vxDiagnosticf("VX_WINDOW_HANDLE_TYPE_SDL not implemented");
+            vxErrorf("VX_WINDOW_HANDLE_TYPE_SDL not implemented");
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         default: {
-            vxDiagnosticf(
+            vxErrorf(
                 "((VxSwapchainWindowHandleType)%u) unsupported",
                 windowHandleType
             );
@@ -2807,27 +2859,29 @@ vxDestroyBufferAllocation(
 VkResult
 vxCopyToBufferAllocation(
     const VxContext*          pContext,
-    const VxBufferAllocation* dstAllocation,
+    const VxBufferAllocation* pDstAllocation,
     VkDeviceSize              dstOffset,
     VkDeviceSize              size,
-    const void*               srcData
+    const void*               pSrcData
 ) {
+    vxAssert(dstOffset + size < pDstAllocation->size);
+
     const VkMemoryMapFlags flags = 0;
 
-    void* dstData = nullptr;
+    void* pDstData = nullptr;
 
     vxExpectSuccessOrReturn(
         vkMapMemory(
             pContext->device,
-            dstAllocation->memory,
+            pDstAllocation->memory,
             dstOffset, size, flags,
-            &dstData
+            &pDstData
         ),{}
     );
 
-    memcpy(dstData, srcData, (size_t)size);
+    memcpy(pDstData, pSrcData, (size_t)size);
 
-    vkUnmapMemory(pContext->device, dstAllocation->memory);
+    vkUnmapMemory(pContext->device, pDstAllocation->memory);
 
     return VK_SUCCESS;
 }
